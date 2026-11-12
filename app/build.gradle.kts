@@ -13,12 +13,12 @@ plugins {
 
 android {
     namespace = "me.rerere.rikkahub"
-    compileSdk = 36
+    compileSdk = 37
 
     defaultConfig {
         applicationId = "me.rerere.orangechat"
         minSdk = 26
-        targetSdk = 36
+        targetSdk = 37
         versionCode = 159
         versionName = "2.2.3"
 
