@@ -1,4 +1,4 @@
-name: Apply Android 36 compatibility
+name: Apply Android 37 preview compatibility
 
 on:
   workflow_dispatch:
@@ -16,7 +16,7 @@ jobs:
           ref: codex/orangechat-modernization
           fetch-depth: 0
 
-      - name: Align Android modules with SDK 36
+      - name: Align Android modules with SDK 37
         shell: bash
         run: |
           files=(
@@ -31,18 +31,18 @@ jobs:
             common/build.gradle.kts
             app/baselineprofile/build.gradle.kts
           )
-          sed -i 's/compileSdk = 37/compileSdk = 36/g; s/targetSdk = 37/targetSdk = 36/g' "${files[@]}"
-          sed -i 's/version = release(37)/version = release(36)/g' web/build.gradle.kts
+          sed -i 's/compileSdk = 36/compileSdk = 37/g; s/targetSdk = 36/targetSdk = 37/g' "${files[@]}"
+          sed -i 's/version = release(36)/version = release(37)/g' web/build.gradle.kts
 
       - name: Commit compatibility update
         shell: bash
         run: |
           if git diff --quiet; then
-            echo "Android SDK level is already aligned."
+            echo "Android SDK preview level is already aligned."
             exit 0
           fi
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add ai/build.gradle.kts workspace/build.gradle.kts search/build.gradle.kts material3/build.gradle.kts highlight/build.gradle.kts speech/build.gradle.kts document/build.gradle.kts app/build.gradle.kts common/build.gradle.kts web/build.gradle.kts app/baselineprofile/build.gradle.kts
-          git commit -m "fix: target available Android 36 SDK"
+          git commit -m "fix: restore Android 37 preview SDK"
           git push origin HEAD:codex/orangechat-modernization
