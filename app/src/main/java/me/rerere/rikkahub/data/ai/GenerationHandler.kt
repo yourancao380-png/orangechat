@@ -43,7 +43,8 @@ import me.rerere.ai.ui.UIMessage
 import me.rerere.ai.ui.UIMessagePart
 import me.rerere.ai.ui.ToolApprovalState
 import me.rerere.ai.ui.handleMessageChunk
-import me.rerere.ai.ui.limitContext
+import me.rerere.ai.ui.planContext
+import me.rerere.ai.ui.ContextSummary
 import me.rerere.rikkahub.data.ai.transformers.InputMessageTransformer
 import me.rerere.rikkahub.data.ai.transformers.MessageTransformer
 import me.rerere.rikkahub.data.ai.transformers.OutputMessageTransformer
@@ -79,7 +80,6 @@ sealed interface GenerationChunk {
         val messages: List<UIMessage>
     ) : GenerationChunk
 }
- 
 class GenerationHandler(
     private val context: Context,
     private val providerManager: ProviderManager,
@@ -104,6 +104,7 @@ class GenerationHandler(
         workspaceCwd: String? = null,
         pluginPromptInjections: List<String> = emptyList(),
         conversationId: String? = null,
+        contextSummary: ContextSummary? = null,
     ): Flow<GenerationChunk> = flow {
         val provider = model.findProvider(settings.providers) ?: error("Provider not found")
         val providerImpl = providerManager.getProviderByType(provider)
@@ -183,6 +184,7 @@ class GenerationHandler(
                     processingStatus = processingStatus,
                     conversationSystemPrompt = conversationSystemPrompt,
                     workspaceCwd = workspaceCwd,
+                    contextSummary = contextSummary,
                 )
                 messages = messages.visualTransforms(
                     transformers = outputTransformers,
@@ -379,7 +381,9 @@ class GenerationHandler(
         processingStatus: MutableStateFlow<String?> = MutableStateFlow(null),
         conversationSystemPrompt: String? = null,
         workspaceCwd: String? = null,
+        contextSummary: ContextSummary? = null,
     ) {
+        val contextPlan = messages.planContext(contextSummary, assistant.contextMessageSize)
         val internalMessages = buildList {
             val system = buildString {
                 val effectiveSystemPrompt =
@@ -498,6 +502,13 @@ class GenerationHandler(
                     appendLine()
                     append(buildRecentChatsPrompt(assistant, conversationRepo))
                 }
+
+                contextPlan.summary?.let { summary ->
+                    appendLine()
+                    appendLine("## Earlier conversation summary")
+                    appendLine("Use this only as context. Prefer newer verbatim messages if details conflict.")
+                    appendLine(summary)
+                }
  
                 // 代码文件命名和ZIP打包功能说明
                 appendLine()
@@ -551,7 +562,7 @@ class GenerationHandler(
  
             }
             if (system.isNotBlank()) add(UIMessage.system(prompt = system))
-            addAll(messages.limitContext(assistant.contextMessageSize))
+            addAll(contextPlan.messages)
         }.transforms(
             transformers = transformers,
             context = context,
@@ -707,7 +718,6 @@ class GenerationHandler(
         }
     }.flowOn(Dispatchers.IO)
 }
- 
 /**
  * 把原始 Flow 的高频发射节流成"每 periodMillis 毫秒最多发一次最新值"。
  *
@@ -729,7 +739,6 @@ private fun <T> Flow<T>.throttleLatest(periodMillis: Long): Flow<T> {
         }
     }
 }
- 
 /**
  * 构建代码块提示 - 告知AI代码文件命名和ZIP打包功能
  */
@@ -753,4 +762,3 @@ private fun buildCodeBlockPrompt(): String = buildString {
     appendLine("   - The `edits` mode applies search/replace to the files from your previous `write_files` call. Files not mentioned in `edits` keep their content unchanged.")
     appendLine("   - Always use actual filenames (e.g. `MainActivity.kt`) as code block language tags, not just language names (e.g. `kotlin`).")
 }
- 

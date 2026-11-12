@@ -40,7 +40,7 @@ import me.rerere.ai.ui.UIMessagePart
 import me.rerere.ai.ui.ToolApprovalState
 import me.rerere.ai.ui.canResumeToolExecution
 import me.rerere.ai.ui.handleMessageChunk
-import me.rerere.ai.ui.limitContext
+import me.rerere.ai.ui.planContext
 import me.rerere.rikkahub.data.ai.transformers.InputMessageTransformer
 import me.rerere.rikkahub.data.ai.transformers.OutputMessageTransformer
 import me.rerere.rikkahub.data.ai.transformers.TemplateTransformer
@@ -55,18 +55,9 @@ import me.rerere.rikkahub.data.ai.transformers.RegexOutputTransformer
 import me.rerere.rikkahub.data.ai.transformers.transforms
 import me.rerere.rikkahub.data.ai.transformers.visualTransforms
 import me.rerere.rikkahub.data.ai.transformers.onGenerationFinish
-import me.rerere.rikkahub.data.ai.tools.LocalTools
-import me.rerere.rikkahub.data.ai.tools.SystemTools
-import me.rerere.rikkahub.data.ai.tools.createSearchTools
-import me.rerere.rikkahub.data.ai.tools.createSkillTools
-import me.rerere.rikkahub.data.ai.tools.ToolNaming
-import me.rerere.rikkahub.data.ai.mcp.McpManager
-import me.rerere.rikkahub.data.files.SkillManager
-import me.rerere.rikkahub.plugin.provider.PluginToolProvider
 import me.rerere.rikkahub.data.repository.MemoryRepository
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
-import kotlinx.serialization.json.jsonObject
 import me.rerere.rikkahub.CHAT_COMPLETED_NOTIFICATION_CHANNEL_ID
 import me.rerere.rikkahub.data.datastore.ProactiveMessageSetting
 import me.rerere.rikkahub.data.datastore.Settings
@@ -401,10 +392,6 @@ class ProactiveMessageTriggerService : android.app.Service(), KoinComponent {
     private val memoryRepository: MemoryRepository by inject()
     private val providerManager: ProviderManager by inject()
     private val templateTransformer: TemplateTransformer by inject()
-    private val localTools: LocalTools by inject()
-    private val skillManager: SkillManager by inject()
-    private val mcpManager: McpManager by inject()
-    private val pluginToolProvider: PluginToolProvider by inject()
     private val json: Json by inject()
     private val chatService: ChatService by inject()
     private val proactiveMessageService = ProactiveMessageService()
@@ -562,16 +549,21 @@ class ProactiveMessageTriggerService : android.app.Service(), KoinComponent {
                 }
 
                 // 获取历史消息（先过滤掉悬空的工具调用消息，避免 tool_use 结构不完整触发 400）
-                val historyMessages = filterInvalidToolMessages(
-                    conversation?.currentMessages?.let {
-                        if (assistant.contextMessageSize > 0) {
-                            it.takeLast(assistant.contextMessageSize)
-                        } else it
-                    } ?: emptyList()
-                )
+                val contextPlan = conversation?.let {
+                    it.currentMessages.planContext(it.contextSummary, assistant.contextMessageSize)
+                }
+                val historyMessages = filterInvalidToolMessages(contextPlan?.messages ?: emptyList())
 
                 // 构建系统提示词（包含记忆 + 上下文，都放在最后面避免被网关淹没）
-                val systemPrompt = buildSystemPrompt(assistant, settings, idleMinutes, proactiveSetting.jumpIdleThresholdMinutes, isFromDeviceEvent, if (isFromDeviceEvent) deviceEventContext else contextStr)
+                val systemPrompt = buildString {
+                    append(buildSystemPrompt(assistant, settings, idleMinutes, proactiveSetting.jumpIdleThresholdMinutes, isFromDeviceEvent, if (isFromDeviceEvent) deviceEventContext else contextStr))
+                    contextPlan?.summary?.let { summary ->
+                        appendLine()
+                        appendLine("## Earlier conversation summary")
+                        appendLine("Use this only as context. Prefer newer verbatim messages if details conflict.")
+                        append(summary)
+                    }
+                }
 
                 // user message 只放简短指令（上下文已在系统提示词中）
                 val userMessage = UIMessage(
@@ -618,8 +610,10 @@ class ProactiveMessageTriggerService : android.app.Service(), KoinComponent {
 
                 val providerImpl = providerManager.getProviderByType(providerSetting)
 
-                // 构建工具列表（与 ChatService 保持一致）
-                val tools = buildTools(settings, assistant, model)
+                // Background proactive generation intentionally has no executable tool surface.
+                // Device context is collected before generation; phone/MCP/plugin actions remain
+                // available only in an interactive chat where approval can actually be shown.
+                val tools = emptyList<Tool>()
 
                 // 主动消息场景：支持工具调用，但限制最大步数
                 // temperature 不强制默认 0.8f，保持与 GenerationHandler 一致（assistant.temperature 为 null 时不传），
@@ -983,43 +977,6 @@ class ProactiveMessageTriggerService : android.app.Service(), KoinComponent {
             category = NotificationCompat.CATEGORY_MESSAGE
             contentIntent = pendingIntent
             useBigTextStyle = true
-        }
-    }
-
-    /**
-     * 构建工具列表（主动消息场景精简版）
-     * 只加载系统工具 + 本地工具 + MCP 工具 + 插件工具，不加载搜索/Skill 工具，
-     * 避免工具过多导致请求体过大触发 API 400。
-     */
-    private suspend fun buildTools(settings: Settings, assistant: Assistant, model: Model): List<Tool> {
-        return buildList {
-            // 本地工具（助手已启用的）
-            addAll(localTools.getTools(assistant.localTools))
-
-            // 系统工具（位置、通知、日历、闹钟、相机）
-            val systemToolsOptions = settings.systemToolsSetting.getEnabledOptions()
-            if (systemToolsOptions.isNotEmpty()) {
-                val systemTools = SystemTools(this@ProactiveMessageTriggerService, settings)
-                addAll(systemTools.getTools(systemToolsOptions))
-            }
-
-            // MCP 工具
-            mcpManager.getAllAvailableTools().forEach { (serverId, tool) ->
-                add(
-                    Tool(
-                        name = ToolNaming.buildMcpToolName(serverId, tool.name),
-                        description = tool.description ?: "",
-                        parameters = { tool.inputSchema },
-                        needsApproval = tool.needsApproval,
-                        execute = {
-                            mcpManager.callTool(serverId, tool.name, it.jsonObject)
-                        },
-                    )
-                )
-            }
-
-            // 插件工具
-            addAll(pluginToolProvider.getTools())
         }
     }
 

@@ -654,12 +654,12 @@ data class DisplaySetting(
     val userAvatar: Avatar = Avatar.Dummy,
     val userNickname: String = "",
     val useAppIconStyleLoadingIndicator: Boolean = true,
-    val showUserAvatar: Boolean = true,
-    val showAssistantBubble: Boolean = false,
-    val showModelIcon: Boolean = true,
-    val showModelName: Boolean = true,
+    val showUserAvatar: Boolean = false,
+    val showAssistantBubble: Boolean = true,
+    val showModelIcon: Boolean = false,
+    val showModelName: Boolean = false,
     val showDateBelowName: Boolean = false,
-    val showTokenUsage: Boolean = true,
+    val showTokenUsage: Boolean = false,
     val showThinkingContent: Boolean = true,
     val autoCloseThinking: Boolean = true,
     val showUpdates: Boolean = true,
@@ -716,7 +716,7 @@ data class DisplaySetting(
     // 气泡背景图 & 圆角
     val userBubbleImagePath: String = "",
     val assistantBubbleImagePath: String = "",
-    val bubbleCornerRadius: Float = 16f,
+    val bubbleCornerRadius: Float = 20f,
     val bubbleImageOverlayEnabled: Boolean = false, // 关=纯图片, 开=图片+主题色遮罩
 )
 

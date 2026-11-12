@@ -30,6 +30,8 @@ data class ConversationEntity(
     val isPinned: Boolean,
     @ColumnInfo("custom_system_prompt", defaultValue = "")
     val customSystemPrompt: String = "",
+    @ColumnInfo("context_summary", defaultValue = "")
+    val contextSummary: String = "",
     @ColumnInfo("folder_id", defaultValue = "")
     val folderId: String = "",
 )

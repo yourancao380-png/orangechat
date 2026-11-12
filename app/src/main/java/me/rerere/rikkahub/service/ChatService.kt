@@ -60,6 +60,9 @@ import me.rerere.ai.ui.canResumeToolExecution
 import me.rerere.ai.ui.finishPendingTools
 import me.rerere.ai.ui.finishReasoning
 import me.rerere.ai.ui.isEmptyInputMessage
+import me.rerere.ai.ui.createContextSummary
+import me.rerere.ai.ui.limitContext
+import me.rerere.ai.ui.planContext
 import me.rerere.common.android.Logging
 import me.rerere.rikkahub.AppScope
 import me.rerere.rikkahub.CHAT_COMPLETED_NOTIFICATION_CHANNEL_ID
@@ -599,9 +602,11 @@ class ChatService(
                 }
                 val providerHandler = providerManager.getProviderByType(provider)
 
-                val historyMessages = currentConversation.currentMessages.let {
-                    if (assistant.contextMessageSize > 0) it.takeLast(assistant.contextMessageSize) else it
-                }
+                val contextPlan = currentConversation.currentMessages.planContext(
+                    currentConversation.contextSummary,
+                    assistant.contextMessageSize,
+                )
+                val historyMessages = contextPlan.messages
 
                 // 记录生成开始前的消息节点数量，作为"生成期间是否有新消息插入"的判断基准
                 val nodeCountBeforeGeneration = currentConversation.messageNodes.size
@@ -609,8 +614,17 @@ class ChatService(
                 val eventDescription = "[系统事件] 你刚刚主动发起的语音通话邀请被用户直接挂断了（拒接，未接听）。请用你自己的语气自然地回应这件事，简短即可，不要提及\"系统事件\"\"工具\"等技术词汇，不要用引号或标注包裹，就当作正常聊天说一句话。"
 
                 val messages = buildList {
-                    if (assistant.systemPrompt.isNotEmpty()) {
-                        add(UIMessage(role = MessageRole.SYSTEM, parts = listOf(UIMessagePart.Text(assistant.systemPrompt))))
+                    val systemPrompt = buildString {
+                        append(assistant.systemPrompt)
+                        contextPlan.summary?.let { summary ->
+                            if (isNotBlank()) appendLine("\n")
+                            appendLine("## Earlier conversation summary")
+                            appendLine("Use this only as context. Prefer newer verbatim messages if details conflict.")
+                            append(summary)
+                        }
+                    }
+                    if (systemPrompt.isNotEmpty()) {
+                        add(UIMessage.system(systemPrompt))
                     }
                     addAll(historyMessages)
                     add(UIMessage.user(eventDescription))
@@ -922,6 +936,7 @@ addAll(localTools.getTools(assistant.localTools, me.rerere.rikkahub.data.ai.tool
                 },
                 pluginPromptInjections = pluginToolProvider.getPluginPromptInjections(),
                 conversationId = conversationId.toString(),
+                contextSummary = conversation.contextSummary,
             ).onCompletion {
                 // 取消 Live Update 通知
                 cancelLiveUpdateNotification(conversationId)
@@ -1300,8 +1315,11 @@ addAll(localTools.getTools(assistant.localTools, me.rerere.rikkahub.data.ai.tool
         val messagesToKeep: List<UIMessage>
 
         if (keepRecentMessages > 0 && allMessages.size > keepRecentMessages) {
-            messagesToCompress = allMessages.dropLast(keepRecentMessages)
-            messagesToKeep = allMessages.takeLast(keepRecentMessages)
+            messagesToKeep = allMessages.limitContext(keepRecentMessages)
+            messagesToCompress = allMessages.dropLast(messagesToKeep.size)
+            if (messagesToCompress.isEmpty()) {
+                throw IllegalStateException(context.getString(R.string.chat_page_compress_not_enough_messages))
+            }
         } else if (keepRecentMessages > 0) {
             // Not enough messages to compress while keeping recent ones
             throw IllegalStateException(context.getString(R.string.chat_page_compress_not_enough_messages))
@@ -1318,11 +1336,11 @@ addAll(localTools.getTools(assistant.localTools, me.rerere.rikkahub.data.ai.tool
             return left + right
         }
 
-        suspend fun compressMessages(messages: List<UIMessage>): String {
+        suspend fun compressMessages(messages: List<UIMessage>, chunkTargetTokens: Int): String {
             val contentToCompress = messages.joinToString("\n\n") { it.summaryAsText() }
             val prompt = settings.compressPrompt.applyPlaceholders(
                 "content" to contentToCompress,
-                "target_tokens" to targetTokens.toString(),
+                "target_tokens" to chunkTargetTokens.toString(),
                 "additional_context" to if (additionalPrompt.isNotBlank()) {
                     "Additional instructions from user: $additionalPrompt"
                 } else "",
@@ -1334,6 +1352,7 @@ addAll(localTools.getTools(assistant.localTools, me.rerere.rikkahub.data.ai.tool
                 messages = listOf(UIMessage.user(prompt)),
                 params = TextGenerationParams(
                     model = model,
+                    maxTokens = chunkTargetTokens,
                 ),
             )
 
@@ -1341,25 +1360,42 @@ addAll(localTools.getTools(assistant.localTools, me.rerere.rikkahub.data.ai.tool
                 ?: throw IllegalStateException("Failed to generate compressed summary")
         }
 
+        if (messagesToCompress.isEmpty()) {
+            throw IllegalStateException(context.getString(R.string.chat_page_compress_not_enough_messages))
+        }
+        val chunks = splitMessages(messagesToCompress)
+        val chunkTargetTokens = (targetTokens / chunks.size).coerceAtLeast(128)
         val compressedSummaries = coroutineScope {
-            splitMessages(messagesToCompress)
-                .map { chunk -> async { compressMessages(chunk) } }
+            chunks
+                .map { chunk -> async { compressMessages(chunk, chunkTargetTokens) } }
                 .awaitAll()
         }
 
-        // Create new conversation with compressed history as multiple user messages + kept messages
-        val newMessageNodes = buildList {
-            compressedSummaries.forEach { summary ->
-                add(UIMessage.user(summary).toMessageNode())
-            }
-            addAll(messagesToKeep.map { it.toMessageNode() })
-        }
-        val newConversation = conversation.copy(
-            messageNodes = newMessageNodes,
-            chatSuggestions = emptyList(),
+        val combinedSummary = compressedSummaries.joinToString(separator = "\n\n")
+        val contextSummary = createContextSummary(
+            summary = combinedSummary,
+            sourceMessages = messagesToCompress,
         )
 
-        saveConversation(conversationId, newConversation)
+        // Re-read under the conversation lock. New messages may have arrived while the summary was
+        // being generated; they are preserved. If the summarized prefix changed, reject the stale
+        // summary instead of silently attaching it to different history.
+        val session = getOrCreateSession(conversationId)
+        session.saveMutex.withLock {
+            val latestConversation = conversationRepo.getConversationById(conversationId)
+                ?: session.state.value
+            val validation = latestConversation.currentMessages.planContext(contextSummary, messageLimit = 0)
+            if (validation.summary == null) {
+                throw IllegalStateException("Conversation changed while compression was running")
+            }
+            saveConversation(
+                conversationId,
+                latestConversation.copy(
+                    contextSummary = contextSummary,
+                    chatSuggestions = emptyList(),
+                )
+            )
+        }
     }
 
     // ---- 通知 ----

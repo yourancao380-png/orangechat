@@ -144,7 +144,7 @@ object HardlineCommandGuard {
      * run it through [checkCommand]. Returns the block reason or null. Tools that don't
      * carry shell content return null trivially (caller's hardline check just no-ops).
      *
-     * MCP tools (any name starting with `mcp__`) are checked by walking every string
+     * MCP tools (any name starting with `mcp_`) are checked by walking every string
      * value in the input JSON — we don't know which MCP server's tool we're dealing
      * with or what its arg shape is, but if any string arg matches a hardline pattern
      * the call is refused. This is the floor; a clueful MCP server should also gate
@@ -186,7 +186,7 @@ object HardlineCommandGuard {
             // content, so we recursively scan every string value in the input. False
             // positives are fine — an MCP tool whose legitimate-purpose arg happens to
             // contain a literal `rm -rf /` is too edge-case to design around.
-            toolName.startsWith("mcp__") -> walkAndCheck(input)
+            toolName.startsWith("mcp_") -> walkAndCheck(input)
             // browser_eval_js: runs arbitrary JS in a real WebView with cookies, localStorage,
             // and fetch — completely unlike eval_javascript (sandboxed QuickJS). This is the
             // single highest-trust tool we ship, hence the dedicated HARDLINE arm + the

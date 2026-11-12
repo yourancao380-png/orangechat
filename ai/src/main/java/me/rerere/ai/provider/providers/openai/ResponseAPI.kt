@@ -9,6 +9,7 @@ package me.rerere.ai.provider.providers.openai
 import android.util.Log
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.channels.awaitClose
+import kotlinx.coroutines.channels.trySendBlocking
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.buffer
 import kotlinx.coroutines.flow.callbackFlow
@@ -62,6 +63,7 @@ import okhttp3.Response
 import okhttp3.sse.EventSource
 import okhttp3.sse.EventSourceListener
 import okhttp3.sse.EventSources
+import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.time.Clock
 
 private const val TAG = "ResponseAPI"
@@ -82,7 +84,7 @@ class ResponseAPI(
             stream = false,
         )
         val request = Request.Builder()
-            .url("${providerSetting.baseUrl}/responses")
+            .url(openAIEndpoint(providerSetting.baseUrl, "/responses"))
             .headers(params.customHeaders.toHeaders())
             .post(json.encodeToString(requestBody).toRequestBody("application/json".toMediaType()))
             .addHeader(
@@ -120,7 +122,7 @@ class ResponseAPI(
             stream = true,
         )
         val request = Request.Builder()
-            .url("${providerSetting.baseUrl}/responses")
+            .url(openAIEndpoint(providerSetting.baseUrl, "/responses"))
             .headers(params.customHeaders.toHeaders())
             .post(json.encodeToString(requestBody).toRequestBody("application/json".toMediaType()))
             .addHeader(
@@ -132,6 +134,8 @@ class ResponseAPI(
 
         Log.i(TAG, "streamText: ${json.encodeToString(requestBody)}")
 
+        val sawTerminalEvent = AtomicBoolean(false)
+        val sawData = AtomicBoolean(false)
         val listener = object : EventSourceListener() {
             override fun onEvent(
                 eventSource: EventSource,
@@ -140,6 +144,7 @@ class ResponseAPI(
                 data: String
             ) {
                 if (data == "[DONE]") {
+                    sawTerminalEvent.set(true)
                     close()
                     return
                 }
@@ -164,17 +169,32 @@ class ResponseAPI(
                     )
                     return
                 }
+                sawData.set(true)
+                val chunkType = type ?: chunkJson["type"]?.jsonPrimitiveOrNull?.contentOrNull
+                if (chunkType == "response.error" || chunkType == "response.failed" || chunkJson["error"] != null) {
+                    val error = (chunkJson["error"] ?: chunkJson).parseErrorDetail()
+                    close(error)
+                    return
+                }
                 val chunk = parseResponseDelta(chunkJson)
                 if (chunk != null) {
-                    trySend(chunk)
+                    val sendResult = trySendBlocking(chunk)
+                    if (sendResult.isFailure) {
+                        close(sendResult.exceptionOrNull() ?: Exception("Stream consumer closed"))
+                        return
+                    }
                 }
-                if (type == "response.completed") {
+                if (chunkType == "response.completed") {
+                    sawTerminalEvent.set(true)
                     close()
                 }
             }
 
             override fun onFailure(eventSource: EventSource, t: Throwable?, response: Response?) {
-                var exception = t
+                val httpCode = response?.code
+                var exception: Throwable = t ?: Exception(
+                    if (httpCode != null) "HTTP $httpCode stream request failed" else "Stream request failed"
+                )
 
                 t?.printStackTrace()
                 println("[onFailure] 发生错误: ${t?.javaClass?.name} ${t?.message} / $response")
@@ -190,13 +210,19 @@ class ResponseAPI(
                 } catch (e: Throwable) {
                     Log.w(TAG, "onFailure: failed to parse from $bodyRaw")
                     e.printStackTrace()
+                    // Preserve the original HTTP/network failure for non-JSON error bodies.
                 } finally {
                     close(exception)
                 }
             }
 
             override fun onClosed(eventSource: EventSource) {
-                close()
+                if (sawTerminalEvent.get()) {
+                    close()
+                } else {
+                    val detail = if (sawData.get()) "after partial data" else "before any data"
+                    close(Exception("Responses stream closed $detail without response.completed"))
+                }
             }
         }
 
@@ -207,9 +233,8 @@ class ResponseAPI(
             println("[awaitClose] 关闭eventSource ")
             eventSource.cancel()
         }
-        // trySend 在缓冲满时会静默丢弃 delta, 导致回复中间缺字 (#1295), 因此缓冲必须无界。
-        // 与上游 rikkahub 对齐: 在 callbackFlow 上叠加 Channel.UNLIMITED 缓冲。
-    }.buffer(Channel.UNLIMITED)
+        // Blocking callback sends provide bounded backpressure without dropping response deltas.
+    }.buffer(Channel.BUFFERED)
 
     internal fun buildRequestBody(
         providerSetting: ProviderSetting.OpenAI,

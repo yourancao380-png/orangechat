@@ -102,6 +102,7 @@ class McpManager(
     private val oauthClient = McpOAuthClient(okHttpClient)
 
     private val clients: MutableMap<Uuid, Pair<McpServerConfig, Client>> = mutableMapOf()
+    private val modernClients: MutableMap<Uuid, Pair<McpServerConfig, ModernMcpClient>> = mutableMapOf()
     private val reconnectJobs: MutableMap<Uuid, Job> = mutableMapOf()
     private val reconnectAttempts: MutableMap<Uuid, Int> = mutableMapOf()
     private val authorizationJobs: MutableMap<Uuid, Job> = mutableMapOf()
@@ -113,9 +114,13 @@ class McpManager(
                 .map { settings -> settings.mcpServers }
                 .collect { mcpServerConfigs ->
                     runCatching {
-                        Log.i(TAG, "update configs: $mcpServerConfigs")
+                        Log.i(
+                            TAG,
+                            "update configs: ${mcpServerConfigs.map { "${it.id}:${it.commonOptions.name}" }}"
+                        )
                         val newConfigs = mcpServerConfigs.filter { it.commonOptions.enable }
-                        val currentConfigs = clients.values.map { it.first }.toList()
+                        val currentConfigs = (clients.values.map { it.first } +
+                            modernClients.values.map { it.first }).distinctBy { it.id }
                         val (toAdd, toRemove) = currentConfigs.checkDifferent(
                             other = newConfigs,
                             eq = { a, b ->
@@ -142,9 +147,10 @@ class McpManager(
         }
     }
 
-    fun getClient(config: McpServerConfig): Client? {
-        return clients[config.id]?.second
-    }
+    fun getClient(config: McpServerConfig): Client? = clients[config.id]?.second
+
+    fun hasClient(config: McpServerConfig): Boolean =
+        config.id in modernClients || config.id in clients
 
     fun getAllAvailableTools(): List<Pair<Uuid, McpTool>> {
         val settings = settingsStore.settingsFlow.value
@@ -161,11 +167,26 @@ class McpManager(
     }
 
     suspend fun callTool(serverId: Uuid, toolName: String, args: JsonObject): List<UIMessagePart> {
+        modernClients[serverId]?.let { (config, modernClient) ->
+            Log.i(TAG, "callTool(modern): $toolName / keys=${args.keys} (server: ${config.commonOptions.name})")
+            return modernClient.callTool(toolName, args).map { content ->
+                when (content) {
+                    is ModernMcpContent.Text -> UIMessagePart.Text(content.text)
+                    is ModernMcpContent.Image -> convertImageContentToFilePart(
+                        data = content.data,
+                        mimeType = content.mimeType,
+                    )
+                    is ModernMcpContent.Unknown -> UIMessagePart.Text(
+                        JsonInstant.encodeToString(content.value)
+                    )
+                }
+            }
+        }
         val pair = clients[serverId]
         val client = pair?.second
             ?: return listOf(UIMessagePart.Text("Failed to execute tool, because no such mcp client for the tool"))
         val config = pair.first
-        Log.i(TAG, "callTool: $toolName / $args (server: ${config.commonOptions.name})")
+        Log.i(TAG, "callTool: $toolName / keys=${args.keys} (server: ${config.commonOptions.name})")
 
         if (client.transport == null) client.connect(getTransport(config))
         val result = client.callTool(
@@ -187,13 +208,20 @@ class McpManager(
     }
 
     private suspend fun convertImageContentToFilePart(image: ImageContent): UIMessagePart.Image {
-        val bytes = Base64.decode(image.data)
+        return convertImageContentToFilePart(image.data, image.mimeType)
+    }
+
+    private suspend fun convertImageContentToFilePart(
+        data: String,
+        mimeType: String,
+    ): UIMessagePart.Image {
+        val bytes = Base64.decode(data)
         val ext = android.webkit.MimeTypeMap.getSingleton()
-            .getExtensionFromMimeType(image.mimeType) ?: "bin"
+            .getExtensionFromMimeType(mimeType) ?: "bin"
         val entity = filesManager.saveUploadFromBytes(
             bytes = bytes,
             displayName = "mcp_image.$ext",
-            mimeType = image.mimeType,
+            mimeType = mimeType,
         )
         val uri = filesManager.getFile(entity).toUri()
         Log.i(TAG, "convertImageContentToFilePart: saved mcp image to $uri")
@@ -247,6 +275,13 @@ class McpManager(
         is McpServerConfig.StreamableHTTPServer -> url
     }
 
+    private fun getModernClient(config: McpServerConfig): ModernMcpClient = ModernMcpClient(
+        httpClient = okHttpClient,
+        url = config.getUrl(),
+        clientName = config.commonOptions.name,
+        headers = config.resolveHeaders(),
+    )
+
     suspend fun addClient(configInput: McpServerConfig) = withContext(Dispatchers.IO) {
         val config = ensureFreshToken(configInput)
         removeClient(config) // Remove first
@@ -283,6 +318,18 @@ class McpManager(
         clients[config.id] = Pair(config, client)
         runCatching {
             setStatus(config = config, status = McpStatus.Connecting)
+            if (config is McpServerConfig.StreamableHTTPServer) {
+                val modernClient = getModernClient(config)
+                if (modernClient.discover()) {
+                    clients.remove(config.id)
+                    modernClients[config.id] = config to modernClient
+                    syncModern(config, modernClient)
+                    setStatus(config = config, status = McpStatus.Connected)
+                    reconnectAttempts[config.id] = 0
+                    Log.i(TAG, "addClient: connected modern ${config.commonOptions.name}")
+                    return@runCatching
+                }
+            }
             client.connect(transport)
             sync(config)
             setStatus(config = config, status = McpStatus.Connected)
@@ -360,7 +407,34 @@ class McpManager(
         setStatus(config = config, status = McpStatus.Connected)
     }
 
+    private suspend fun syncModern(config: McpServerConfig, client: ModernMcpClient) {
+        setStatus(config = config, status = McpStatus.Connecting)
+        val serverTools = client.listTools()
+        val common = config.commonOptions
+        val previousByName = common.tools.associateBy { it.name }
+        val tools = serverTools.map { serverTool ->
+            val previous = previousByName[serverTool.name]
+            serverTool.copy(
+                enable = previous?.enable ?: true,
+                needsApproval = previous?.needsApproval ?: false,
+            )
+        }
+        val updatedConfig = config.clone(commonOptions = common.copy(tools = tools))
+        modernClients[config.id] = updatedConfig to client
+        settingsStore.update { old ->
+            old.copy(
+                mcpServers = old.mcpServers.map { serverConfig ->
+                    if (serverConfig.id == config.id) updatedConfig else serverConfig
+                }
+            )
+        }
+        setStatus(config = config, status = McpStatus.Connected)
+    }
+
     suspend fun syncAll() = withContext(Dispatchers.IO) {
+        modernClients.values.toList().forEach { (config, client) ->
+            runCatching { syncModern(config, client) }.onFailure { it.printStackTrace() }
+        }
         clients.values.map { it.first }.toList().forEach { config ->
             runCatching {
                 sync(config)
@@ -372,6 +446,8 @@ class McpManager(
 
     suspend fun removeClient(config: McpServerConfig) = withContext(Dispatchers.IO) {
         cancelReconnect(config.id)
+        val modernEntry = modernClients.remove(config.id)
+        modernEntry?.second?.close()
         val entry = clients.remove(config.id)
         if (entry != null) {
             runCatching {
@@ -379,8 +455,10 @@ class McpManager(
             }.onFailure {
                 it.printStackTrace()
             }
+            Log.i(TAG, "removeClient: ${entry.first.id} / ${entry.first.commonOptions.name}")
+        }
+        if (entry != null || modernEntry != null) {
             syncingStatus.emit(syncingStatus.value.toMutableMap().apply { remove(config.id) })
-            Log.i(TAG, "removeClient: ${entry.first} / ${entry.first.commonOptions.name}")
         }
         reconnectAttempts.remove(config.id)
     }
@@ -446,6 +524,7 @@ class McpManager(
 
     private suspend fun reconnectClient(configInput: McpServerConfig) = withContext(Dispatchers.IO) {
         val config = ensureFreshToken(configInput)
+        modernClients.remove(config.id)?.let { (_, client) -> client.close() }
         // 先关闭旧客户端
         val oldEntry = clients[config.id]
         if (oldEntry != null) {
@@ -481,6 +560,15 @@ class McpManager(
         clients[config.id] = Pair(config, client)
         setStatus(config, McpStatus.Connecting)
         runCatching {
+            if (config is McpServerConfig.StreamableHTTPServer) {
+                val modernClient = getModernClient(config)
+                if (modernClient.discover()) {
+                    clients.remove(config.id)
+                    modernClients[config.id] = config to modernClient
+                    syncModern(config, modernClient)
+                    return@runCatching
+                }
+            }
             client.connect(transport)
             sync(config)
         }.onSuccess {

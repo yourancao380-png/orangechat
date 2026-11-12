@@ -787,7 +787,7 @@ private fun McpToolsConfigure(
         verticalArrangement = Arrangement.spacedBy(8.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
-        if (mcpManager.getClient(config) == null) {
+        if (!mcpManager.hasClient(config)) {
             item {
                 Text(stringResource(R.string.setting_mcp_page_tools_unavailable_message))
             }

@@ -11,6 +11,7 @@ import kotlinx.coroutines.Dispatchers
 import me.rerere.common.android.Logging
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.channels.awaitClose
+import kotlinx.coroutines.channels.trySendBlocking
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.buffer
 import kotlinx.coroutines.flow.callbackFlow
@@ -68,6 +69,7 @@ import okhttp3.Response
 import okhttp3.sse.EventSource
 import okhttp3.sse.EventSourceListener
 import okhttp3.sse.EventSources
+import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.time.Clock
 
 private const val TAG = "ChatCompletionsAPI"
@@ -89,7 +91,7 @@ class ChatCompletionsAPI(
             )
 
         val request = Request.Builder()
-            .url("${providerSetting.baseUrl}${providerSetting.chatCompletionsPath}")
+            .url(openAIEndpoint(providerSetting.baseUrl, providerSetting.chatCompletionsPath))
             .headers(params.customHeaders.toHeaders())
             .post(json.encodeToString(requestBody).toRequestBody("application/json".toMediaType()))
             .addHeader("Authorization", "Bearer ${keyRoulette.next(providerSetting.apiKey, providerSetting.id.toString())}")
@@ -129,14 +131,24 @@ class ChatCompletionsAPI(
                 throw Exception("No valid data found in SSE response")
             }
 
-            // 从最后一个有 choices 的 chunk 获取 id、model、usage、finishReason
+            // Usage is commonly delivered in a final choices:[] packet. Keep that packet for
+            // usage, but read message/finish data from the last packet that actually has choices.
             val lastChunk = sseChunks.last()
-            val id = lastChunk["id"]?.jsonPrimitive?.contentOrNull ?: ""
-            val model = lastChunk["model"]?.jsonPrimitive?.contentOrNull ?: ""
-            val finishReason = lastChunk["choices"]
+            val lastChoiceChunk = sseChunks.lastOrNull {
+                it["choices"]?.jsonArrayOrNull?.isNotEmpty() == true
+            } ?: throw Exception("SSE response contained no message choices")
+            val id = sseChunks.asReversed().firstNotNullOfOrNull {
+                it["id"]?.jsonPrimitiveOrNull?.contentOrNull
+            } ?: ""
+            val model = sseChunks.asReversed().firstNotNullOfOrNull {
+                it["model"]?.jsonPrimitiveOrNull?.contentOrNull
+            } ?: ""
+            val finishReason = lastChoiceChunk["choices"]
                 ?.jsonArray?.get(0)?.jsonObject
                 ?.get("finish_reason")?.jsonPrimitive?.contentOrNull ?: "unknown"
-            val usage = parseTokenUsage(lastChunk["usage"] as? JsonObject)
+            val usage = sseChunks.asReversed().firstNotNullOfOrNull {
+                parseTokenUsage(it["usage"] as? JsonObject)
+            }
 
             // 合并所有 delta 为完整 message
             val mergedContent = buildString {
@@ -152,10 +164,10 @@ class ChatCompletionsAPI(
             }
 
             // 尝试从最后一个 chunk 的 delta 或 message 获取 tool_calls 等其他字段
-            val lastDelta = lastChunk["choices"]
+            val lastDelta = lastChoiceChunk["choices"]
                 ?.jsonArray?.get(0)?.jsonObject
                 ?.get("delta")?.jsonObject
-                ?: lastChunk["choices"]?.jsonArray?.get(0)?.jsonObject
+                ?: lastChoiceChunk["choices"]?.jsonArray?.get(0)?.jsonObject
                     ?.get("message")?.jsonObject
                 ?: buildJsonObject { put("content", mergedContent) }
 
@@ -231,7 +243,7 @@ class ChatCompletionsAPI(
         )
 
         val request = Request.Builder()
-            .url("${providerSetting.baseUrl}${providerSetting.chatCompletionsPath}")
+            .url(openAIEndpoint(providerSetting.baseUrl, providerSetting.chatCompletionsPath))
             .headers(params.customHeaders.toHeaders())
             .post(json.encodeToString(requestBody).toRequestBody("application/json".toMediaType()))
             .addHeader("Authorization", "Bearer ${keyRoulette.next(providerSetting.apiKey, providerSetting.id.toString())}")
@@ -244,6 +256,8 @@ class ChatCompletionsAPI(
         // just for debugging response body
         // println(client.newCall(request).await().body?.string())
 
+        val sawTerminalEvent = AtomicBoolean(false)
+        val sawData = AtomicBoolean(false)
         val listener = object : EventSourceListener() {
             override fun onEvent(
                 eventSource: EventSource,
@@ -253,6 +267,7 @@ class ChatCompletionsAPI(
             ) {
                 if (data == "[DONE]") {
                     println("[onEvent] (done) 结束流: $data")
+                    sawTerminalEvent.set(true)
                     close()
                     return
                 }
@@ -282,6 +297,7 @@ class ChatCompletionsAPI(
                     )
                     return
                 }
+                sawData.set(true)
                 if (chunkJson["error"] != null) {
                     // 流式响应中携带了 error 字段 (HTTP 连接本身是200, 但错误包在流数据里)
                     // 记录完整的原始 error JSON 内容, 便于排查上游返回的具体错误原因
@@ -321,6 +337,9 @@ class ChatCompletionsAPI(
                         val finishReason =
                             choice["finish_reason"]?.jsonPrimitive?.contentOrNull
                                 ?: "unknown"
+                        if (finishReason != "unknown") {
+                            sawTerminalEvent.set(true)
+                        }
                         add(
                             UIMessageChoice(
                                 index = 0,
@@ -339,11 +358,17 @@ class ChatCompletionsAPI(
                     choices = choiceList,
                     usage = usage
                 )
-                trySend(messageChunk)
+                val sendResult = trySendBlocking(messageChunk)
+                if (sendResult.isFailure) {
+                    close(sendResult.exceptionOrNull() ?: Exception("Stream consumer closed"))
+                }
             }
 
             override fun onFailure(eventSource: EventSource, t: Throwable?, response: Response?) {
-                var exception = t
+                val httpCode = response?.code
+                var exception: Throwable = t ?: Exception(
+                    if (httpCode != null) "HTTP $httpCode stream request failed" else "Stream request failed"
+                )
 
                 t?.printStackTrace()
                 val failureMsg = "onFailure: ${t?.javaClass?.name} ${t?.message} / response=$response"
@@ -369,14 +394,20 @@ class ChatCompletionsAPI(
                     val parseMsg = "onFailure: failed to parse error body: $bodyRaw"
                     Log.w(TAG, parseMsg, e)
                     Logging.log(TAG, parseMsg)
-                    exception = e
+                    // Preserve the HTTP/network failure. A non-JSON HTML/text body is evidence,
+                    // not a replacement parse error.
                 } finally {
                     close(exception)
                 }
             }
 
             override fun onClosed(eventSource: EventSource) {
-                close()
+                if (sawTerminalEvent.get()) {
+                    close()
+                } else {
+                    val detail = if (sawData.get()) "after partial data" else "before any data"
+                    close(Exception("Stream closed $detail without [DONE] or finish_reason"))
+                }
             }
         }
 
@@ -386,9 +417,9 @@ class ChatCompletionsAPI(
             println("[awaitClose] 关闭eventSource ")
             eventSource.cancel()
         }
-        // trySend 在缓冲满时会静默丢弃 delta, 导致回复中间缺字 (#1295), 因此缓冲必须无界。
-        // 与上游 rikkahub 对齐: 在 callbackFlow 上叠加 Channel.UNLIMITED 缓冲。
-    }.buffer(Channel.UNLIMITED)
+        // EventSource callbacks use blocking sends so a slow UI applies backpressure instead of
+        // silently dropping deltas or growing an unbounded queue.
+    }.buffer(Channel.BUFFERED)
 
 
     private fun buildChatCompletionRequest(

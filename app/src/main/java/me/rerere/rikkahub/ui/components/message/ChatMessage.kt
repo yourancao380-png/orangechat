@@ -34,6 +34,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material3.Icon
+import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.LocalTextStyle
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ProvideTextStyle
@@ -41,6 +42,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -57,8 +59,10 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
@@ -291,7 +295,6 @@ fun ChatMessage(
         )
     }
 }
- 
 @OptIn(FlowPreview::class)
 @Composable
 private fun MessagePartsBlock(
@@ -312,6 +315,30 @@ private fun MessagePartsBlock(
     val hapticFeedback = LocalHapticFeedback.current
     val displaySettings = LocalDisplaySettings.current
     val bubbleAlpha = 1f - displaySettings.chatBubbleTransparency / 100f
+    val bubbleRadius = displaySettings.bubbleCornerRadius.dp.coerceAtLeast(16.dp)
+    val maxBubbleWidth = (LocalConfiguration.current.screenWidthDp.dp * 0.78f).coerceAtMost(520.dp)
+    val userBubbleColor = displaySettings.userBubbleColor?.let { it.toComposeColor() }
+        ?: MaterialTheme.colorScheme.primary
+    val assistantBubbleColor = displaySettings.assistantBubbleColor?.let { it.toComposeColor() }
+        ?: MaterialTheme.colorScheme.surfaceContainerHighest
+    val userBubbleContentColor = if (displaySettings.userBubbleColor == null) {
+        MaterialTheme.colorScheme.onPrimary
+    } else {
+        MaterialTheme.colorScheme.onSecondaryContainer
+    }
+    val assistantBubbleContentColor = MaterialTheme.colorScheme.onSurface
+    val userBubbleShape = RoundedCornerShape(
+        topStart = bubbleRadius,
+        topEnd = bubbleRadius,
+        bottomStart = bubbleRadius,
+        bottomEnd = 6.dp,
+    )
+    val assistantBubbleShape = RoundedCornerShape(
+        topStart = bubbleRadius,
+        topEnd = bubbleRadius,
+        bottomStart = 6.dp,
+        bottomEnd = bubbleRadius,
+    )
     val partsState by rememberUpdatedState(parts)
  
     val handleClickCitation: (String) -> Unit = remember {
@@ -408,9 +435,12 @@ private fun MessagePartsBlock(
                                             bubbleSegments.fastForEachIndexed { segIndex, segment ->
                                                 key(segIndex) {
                                                     BubbleSurface(
+                                                        modifier = Modifier.widthIn(max = maxBubbleWidth),
                                                         imagePath = displaySettings.userBubbleImagePath,
-                                                        cornerRadius = displaySettings.bubbleCornerRadius.dp,
-                                                        color = displaySettings.userBubbleColor?.let { it.toComposeColor() } ?: MaterialTheme.colorScheme.secondaryContainer,
+                                                        cornerRadius = bubbleRadius,
+                                                        shape = userBubbleShape,
+                                                        color = userBubbleColor,
+                                                        contentColor = userBubbleContentColor,
                                                         overlayEnabled = displaySettings.bubbleImageOverlayEnabled,
                                                         bubbleAlpha = bubbleAlpha,
                                                         onClick = { onUserMessageClick?.invoke() },
@@ -429,9 +459,12 @@ private fun MessagePartsBlock(
                                         }
                                     } else {
                                         BubbleSurface(
+                                            modifier = Modifier.widthIn(max = maxBubbleWidth),
                                             imagePath = displaySettings.userBubbleImagePath,
-                                            cornerRadius = displaySettings.bubbleCornerRadius.dp,
-                                            color = displaySettings.userBubbleColor?.let { it.toComposeColor() } ?: MaterialTheme.colorScheme.secondaryContainer,
+                                            cornerRadius = bubbleRadius,
+                                            shape = userBubbleShape,
+                                            color = userBubbleColor,
+                                            contentColor = userBubbleContentColor,
                                             overlayEnabled = displaySettings.bubbleImageOverlayEnabled,
                                             bubbleAlpha = bubbleAlpha,
                                             onClick = { onUserMessageClick?.invoke() },
@@ -459,9 +492,12 @@ private fun MessagePartsBlock(
                                             key(segIndex) {
                                                 if (displaySettings.showAssistantBubble) {
                                                     BubbleSurface(
+                                                        modifier = Modifier.widthIn(max = maxBubbleWidth),
                                                         imagePath = displaySettings.assistantBubbleImagePath,
-                                                        cornerRadius = displaySettings.bubbleCornerRadius.dp,
-                                                        color = displaySettings.assistantBubbleColor?.let { it.toComposeColor() } ?: MaterialTheme.colorScheme.surfaceContainerHigh,
+                                                        cornerRadius = bubbleRadius,
+                                                        shape = assistantBubbleShape,
+                                                        color = assistantBubbleColor,
+                                                        contentColor = assistantBubbleContentColor,
                                                         overlayEnabled = displaySettings.bubbleImageOverlayEnabled,
                                                         bubbleAlpha = bubbleAlpha,
                                                     ) {
@@ -492,9 +528,12 @@ private fun MessagePartsBlock(
                                 } else {
                                     if (displaySettings.showAssistantBubble) {
                                         BubbleSurface(
+                                            modifier = Modifier.widthIn(max = maxBubbleWidth),
                                             imagePath = displaySettings.assistantBubbleImagePath,
-                                            cornerRadius = displaySettings.bubbleCornerRadius.dp,
-                                            color = displaySettings.assistantBubbleColor?.let { it.toComposeColor() } ?: MaterialTheme.colorScheme.surfaceContainerHigh,
+                                            cornerRadius = bubbleRadius,
+                                            shape = assistantBubbleShape,
+                                            color = assistantBubbleColor,
+                                            contentColor = assistantBubbleContentColor,
                                             overlayEnabled = displaySettings.bubbleImageOverlayEnabled,
                                             bubbleAlpha = bubbleAlpha,
                                         ) {
@@ -717,9 +756,12 @@ private fun MessagePartsBlock(
  
 @Composable
 private fun BubbleSurface(
+    modifier: Modifier = Modifier,
     imagePath: String,
     cornerRadius: Dp,
+    shape: Shape = RoundedCornerShape(cornerRadius),
     color: Color,
+    contentColor: Color = Color.Unspecified,
     overlayEnabled: Boolean,
     bubbleAlpha: Float,
     onClick: (() -> Unit)? = null,
@@ -728,9 +770,9 @@ private fun BubbleSurface(
     val hasImage = imagePath.isNotBlank() && java.io.File(imagePath).exists()
     if (hasImage) {
         Box(
-            modifier = Modifier
+            modifier = modifier
                 .animateContentSize()
-                .clip(RoundedCornerShape(cornerRadius))
+                .clip(shape)
                 .then(if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier)
         ) {
             AsyncImage(
@@ -746,16 +788,31 @@ private fun BubbleSurface(
                         .background(color.copy(alpha = bubbleAlpha))
                 )
             }
-            Column(modifier = Modifier.padding(8.dp)) { content() }
+            CompositionLocalProvider(LocalContentColor provides contentColor) {
+                Column(modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) { content() }
+            }
         }
     } else {
-        Surface(
-            modifier = Modifier.animateContentSize(),
-            shape = RoundedCornerShape(cornerRadius),
-            color = color.copy(alpha = bubbleAlpha),
-            onClick = onClick ?: {},
-        ) {
-            Column(modifier = Modifier.padding(8.dp)) { content() }
+        val bubbleContent: @Composable () -> Unit = {
+            Column(modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) { content() }
+        }
+        if (onClick != null) {
+            Surface(
+                modifier = modifier.animateContentSize(),
+                shape = shape,
+                color = color.copy(alpha = bubbleAlpha),
+                contentColor = contentColor,
+                onClick = onClick,
+                content = bubbleContent,
+            )
+        } else {
+            Surface(
+                modifier = modifier.animateContentSize(),
+                shape = shape,
+                color = color.copy(alpha = bubbleAlpha),
+                contentColor = contentColor,
+                content = bubbleContent,
+            )
         }
     }
 }
@@ -1036,4 +1093,3 @@ internal fun VoiceMessageBubble(
         }
     }
 }
- 

@@ -175,7 +175,7 @@ public class StreamableHttpClientTransport(
                 if (response.contentType() == null && body.isBlank()) return
 
                 val ct = response.contentType()?.toString() ?: "<none>"
-                val error = StreamableHttpError(-1, "Unexpected content type: $$ct")
+                val error = StreamableHttpError(-1, "Unexpected content type: $ct")
                 _onError(error)
                 throw error
             }
@@ -368,8 +368,20 @@ public class StreamableHttpClientTransport(
             when {
                 line.startsWith("id:") -> id = line.substringAfter("id:").trim()
                 line.startsWith("event:") -> eventName = line.substringAfter("event:").trim()
-                line.startsWith("data:") -> sb.append(line.substringAfter("data:").trim())
+                line.startsWith("data:") -> {
+                    // Multiple data fields in one SSE event are joined with a newline by the SSE
+                    // specification. Concatenating them directly can corrupt JSON strings or
+                    // gateway-fragmented payloads.
+                    if (sb.isNotEmpty()) sb.append('\n')
+                    sb.append(line.substringAfter("data:").removePrefix(" "))
+                }
             }
+        }
+
+        // A server is allowed to end the body without a final blank separator. Dispatch the
+        // pending event instead of silently dropping the last JSON-RPC response.
+        if (sb.isNotEmpty()) {
+            dispatch(id = id, eventName = eventName, data = sb.toString())
         }
     }
 }

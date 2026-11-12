@@ -197,7 +197,7 @@
     <!-- Proactive Message Receiver (handles both proactive alarm and boot completed) -->
     <receiver
       android:name=".data.service.ProactiveMessageReceiver"
-      android:exported="true">
+      android:exported="false">
       <intent-filter>
         <action android:name="me.rerere.orangechat.PROACTIVE_MESSAGE" />
         <action android:name="android.intent.action.BOOT_COMPLETED" />
