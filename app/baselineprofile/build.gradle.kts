@@ -5,7 +5,7 @@ plugins {
 
 android {
     namespace = "me.rerere.baselineprofile"
-    compileSdk = 37
+    compileSdk = 36
 
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_11
@@ -14,7 +14,7 @@ android {
 
     defaultConfig {
         minSdk = 28
-        targetSdk = 37
+        targetSdk = 36
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
