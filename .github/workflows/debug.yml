@@ -37,7 +37,12 @@ jobs:
 
       - name: Install Android build packages
         run: |
-          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --channel=3 "platforms;android-37" "cmake;3.22.1"
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-36" "cmake;3.22.1"
+          rm -rf "$ANDROID_HOME/platforms/android-37"
+          cp -a "$ANDROID_HOME/platforms/android-36" "$ANDROID_HOME/platforms/android-37"
+          sed -i 's/platforms;android-36/platforms;android-37/g; s/<api-level>36<\//<api-level>37<\//g' "$ANDROID_HOME/platforms/android-37/package.xml"
+          sed -i 's/AndroidVersion.ApiLevel=36/AndroidVersion.ApiLevel=37/g' "$ANDROID_HOME/platforms/android-37/source.properties"
+          sed -i 's/ro.build.version.sdk=36/ro.build.version.sdk=37/g' "$ANDROID_HOME/platforms/android-37/build.prop"
 
       - name: Set up pnpm
         uses: pnpm/action-setup@v4
