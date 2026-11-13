@@ -1,4 +1,4 @@
-From ac60bfba0704110f6b97b966fbe2c3826c20d662 Mon Sep 17 00:00:00 2001
+From 72b172308690b6805fb3fd57cb9ba6ac41207cbf Mon Sep 17 00:00:00 2001
 From: Codex <codex@openai.com>
 Date: Fri, 13 Nov 2026 05:34:33 -0600
 Subject: [PATCH] feat: add intimate chat preview styling
@@ -8,14 +8,14 @@ Subject: [PATCH] feat: add intimate chat preview styling
  .../data/datastore/PreferencesStore.kt        |  24 +++-
  .../rerere/rikkahub/data/model/Assistant.kt   |   4 +-
  .../rikkahub/ui/components/ai/ChatInput.kt    |  36 +++++-
- .../ui/components/message/ChatMessage.kt      |  72 ++++++++++--
+ .../ui/components/message/ChatMessage.kt      |  73 ++++++++++--
  .../components/message/ChatMessageAvatar.kt   | 110 +++++++++++-------
  .../rerere/rikkahub/ui/hooks/AvatarShape.kt   |  14 ++-
  .../setting/SettingDisplayMessagePage.kt      |  75 +++++++++++-
  app/src/main/res/values-zh-rTW/strings.xml    |   2 +-
  app/src/main/res/values-zh/strings.xml        |   2 +-
  app/src/main/res/values/strings.xml           |   2 +-
- 11 files changed, 282 insertions(+), 63 deletions(-)
+ 11 files changed, 283 insertions(+), 63 deletions(-)
  create mode 100644 app/src/debug/res/values/strings.xml
 
 diff --git a/app/src/debug/res/values/strings.xml b/app/src/debug/res/values/strings.xml
@@ -164,21 +164,22 @@ index 7cc29cb..8a9592b 100644
 \ No newline at end of file
 +}
 diff --git a/app/src/main/java/me/rerere/rikkahub/ui/components/message/ChatMessage.kt b/app/src/main/java/me/rerere/rikkahub/ui/components/message/ChatMessage.kt
-index 35557f5..7cbdecd 100644
+index 35557f5..eb41ac1 100644
 --- a/app/src/main/java/me/rerere/rikkahub/ui/components/message/ChatMessage.kt
 +++ b/app/src/main/java/me/rerere/rikkahub/ui/components/message/ChatMessage.kt
-@@ -59,7 +59,10 @@ import androidx.compose.ui.draw.clip
+@@ -59,7 +59,11 @@ import androidx.compose.ui.draw.clip
  import androidx.compose.ui.draw.drawWithContent
  import androidx.compose.ui.geometry.Size
  import androidx.compose.ui.graphics.Color
 +import androidx.compose.ui.graphics.Path
  import androidx.compose.ui.graphics.Shape
 +import androidx.compose.ui.graphics.StrokeCap
++import androidx.compose.ui.graphics.luminance
 +import androidx.compose.ui.graphics.drawscope.Stroke
  import androidx.compose.ui.hapticfeedback.HapticFeedbackType
  import androidx.compose.ui.platform.LocalContext
  import androidx.compose.ui.platform.LocalConfiguration
-@@ -115,6 +118,7 @@ import me.rerere.rikkahub.ui.components.ui.toComposeColor
+@@ -115,6 +119,7 @@ import me.rerere.rikkahub.ui.components.ui.toComposeColor
  import me.rerere.rikkahub.ui.context.LocalDisplaySettings
  import me.rerere.rikkahub.ui.theme.extendColors
  import me.rerere.rikkahub.data.datastore.ChatFontFamily
@@ -186,7 +187,7 @@ index 35557f5..7cbdecd 100644
  import androidx.compose.ui.text.font.Font
  import androidx.compose.ui.layout.ContentScale
  import androidx.compose.foundation.Image
-@@ -321,12 +325,8 @@ private fun MessagePartsBlock(
+@@ -321,12 +326,8 @@ private fun MessagePartsBlock(
          ?: MaterialTheme.colorScheme.primary
      val assistantBubbleColor = displaySettings.assistantBubbleColor?.let { it.toComposeColor() }
          ?: MaterialTheme.colorScheme.surfaceContainerHighest
@@ -201,7 +202,7 @@ index 35557f5..7cbdecd 100644
      val userBubbleShape = RoundedCornerShape(
          topStart = bubbleRadius,
          topEnd = bubbleRadius,
-@@ -443,6 +443,8 @@ private fun MessagePartsBlock(
+@@ -443,6 +444,8 @@ private fun MessagePartsBlock(
                                                          contentColor = userBubbleContentColor,
                                                          overlayEnabled = displaySettings.bubbleImageOverlayEnabled,
                                                          bubbleAlpha = bubbleAlpha,
@@ -210,7 +211,7 @@ index 35557f5..7cbdecd 100644
                                                          onClick = { onUserMessageClick?.invoke() },
                                                      ) {
                                                          MarkdownBlock(
-@@ -467,6 +469,8 @@ private fun MessagePartsBlock(
+@@ -467,6 +470,8 @@ private fun MessagePartsBlock(
                                              contentColor = userBubbleContentColor,
                                              overlayEnabled = displaySettings.bubbleImageOverlayEnabled,
                                              bubbleAlpha = bubbleAlpha,
@@ -219,7 +220,7 @@ index 35557f5..7cbdecd 100644
                                              onClick = { onUserMessageClick?.invoke() },
                                          ) {
                                              MarkdownBlock(
-@@ -500,6 +504,8 @@ private fun MessagePartsBlock(
+@@ -500,6 +505,8 @@ private fun MessagePartsBlock(
                                                          contentColor = assistantBubbleContentColor,
                                                          overlayEnabled = displaySettings.bubbleImageOverlayEnabled,
                                                          bubbleAlpha = bubbleAlpha,
@@ -228,7 +229,7 @@ index 35557f5..7cbdecd 100644
                                                      ) {
                                                          MarkdownBlock(
                                                              content = segment.replaceRegexes(
-@@ -536,6 +542,8 @@ private fun MessagePartsBlock(
+@@ -536,6 +543,8 @@ private fun MessagePartsBlock(
                                              contentColor = assistantBubbleContentColor,
                                              overlayEnabled = displaySettings.bubbleImageOverlayEnabled,
                                              bubbleAlpha = bubbleAlpha,
@@ -237,7 +238,7 @@ index 35557f5..7cbdecd 100644
                                          ) {
                                              MarkdownBlock(
                                                  content = displayText.replaceRegexes(
-@@ -764,6 +772,8 @@ private fun BubbleSurface(
+@@ -764,6 +773,8 @@ private fun BubbleSurface(
      contentColor: Color = Color.Unspecified,
      overlayEnabled: Boolean,
      bubbleAlpha: Float,
@@ -246,7 +247,7 @@ index 35557f5..7cbdecd 100644
      onClick: (() -> Unit)? = null,
      content: @Composable () -> Unit,
  ) {
-@@ -772,6 +782,7 @@ private fun BubbleSurface(
+@@ -772,6 +783,7 @@ private fun BubbleSurface(
          Box(
              modifier = modifier
                  .animateContentSize()
@@ -254,7 +255,7 @@ index 35557f5..7cbdecd 100644
                  .clip(shape)
                  .then(if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier)
          ) {
-@@ -798,7 +809,9 @@ private fun BubbleSurface(
+@@ -798,7 +810,9 @@ private fun BubbleSurface(
          }
          if (onClick != null) {
              Surface(
@@ -265,7 +266,7 @@ index 35557f5..7cbdecd 100644
                  shape = shape,
                  color = color.copy(alpha = bubbleAlpha),
                  contentColor = contentColor,
-@@ -807,7 +820,9 @@ private fun BubbleSurface(
+@@ -807,7 +821,9 @@ private fun BubbleSurface(
              )
          } else {
              Surface(
@@ -276,7 +277,7 @@ index 35557f5..7cbdecd 100644
                  shape = shape,
                  color = color.copy(alpha = bubbleAlpha),
                  contentColor = contentColor,
-@@ -816,6 +831,47 @@ private fun BubbleSurface(
+@@ -816,6 +832,47 @@ private fun BubbleSurface(
          }
      }
  }
