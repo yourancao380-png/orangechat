@@ -8,7 +8,7 @@ on:
       - master
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
   group: debug-apk-${{ github.ref }}
@@ -92,6 +92,17 @@ jobs:
           if-no-files-found: error
           retention-days: 14
           compression-level: 0
+
+      - name: Publish installable Honor preview
+        if: github.event_name == 'push' && github.ref == 'refs/heads/codex/orangechat-modernization'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: preview-${{ github.sha }}
+          name: OrangeChat Preview for Honor
+          body: First installable OrangeChat UI preview for Honor arm64 devices.
+          prerelease: true
+          make_latest: false
+          files: app/build/outputs/apk/debug/*arm64-v8a*.apk
 
       - name: Upload test reports
         if: always()
