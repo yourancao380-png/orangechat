@@ -1,0 +1,650 @@
+From ac60bfba0704110f6b97b966fbe2c3826c20d662 Mon Sep 17 00:00:00 2001
+From: Codex <codex@openai.com>
+Date: Fri, 13 Nov 2026 05:34:33 -0600
+Subject: [PATCH] feat: add intimate chat preview styling
+
+---
+ app/src/debug/res/values/strings.xml          |   4 +
+ .../data/datastore/PreferencesStore.kt        |  24 +++-
+ .../rerere/rikkahub/data/model/Assistant.kt   |   4 +-
+ .../rikkahub/ui/components/ai/ChatInput.kt    |  36 +++++-
+ .../ui/components/message/ChatMessage.kt      |  72 ++++++++++--
+ .../components/message/ChatMessageAvatar.kt   | 110 +++++++++++-------
+ .../rerere/rikkahub/ui/hooks/AvatarShape.kt   |  14 ++-
+ .../setting/SettingDisplayMessagePage.kt      |  75 +++++++++++-
+ app/src/main/res/values-zh-rTW/strings.xml    |   2 +-
+ app/src/main/res/values-zh/strings.xml        |   2 +-
+ app/src/main/res/values/strings.xml           |   2 +-
+ 11 files changed, 282 insertions(+), 63 deletions(-)
+ create mode 100644 app/src/debug/res/values/strings.xml
+
+diff --git a/app/src/debug/res/values/strings.xml b/app/src/debug/res/values/strings.xml
+new file mode 100644
+index 0000000..b8f35e5
+--- /dev/null
++++ b/app/src/debug/res/values/strings.xml
+@@ -0,0 +1,4 @@
++<?xml version="1.0" encoding="utf-8"?>
++<resources>
++    <string name="app_name">OrangeChat Preview</string>
++</resources>
+diff --git a/app/src/main/java/me/rerere/rikkahub/data/datastore/PreferencesStore.kt b/app/src/main/java/me/rerere/rikkahub/data/datastore/PreferencesStore.kt
+index fa290c9..9949e37 100644
+--- a/app/src/main/java/me/rerere/rikkahub/data/datastore/PreferencesStore.kt
++++ b/app/src/main/java/me/rerere/rikkahub/data/datastore/PreferencesStore.kt
+@@ -649,14 +649,34 @@ enum class ChatFontFamily {
+     CUSTOM,
+ }
+ 
++@Serializable
++enum class AvatarShapeStyle {
++    @SerialName("circle")
++    CIRCLE,
++    @SerialName("rounded_square")
++    ROUNDED_SQUARE,
++}
++
++@Serializable
++enum class BubbleStyle {
++    @SerialName("rounded")
++    ROUNDED,
++    @SerialName("cat")
++    CAT,
++}
++
+ @Serializable
+ data class DisplaySetting(
+     val userAvatar: Avatar = Avatar.Dummy,
+     val userNickname: String = "",
++    val userAvatarCaption: String = "明天见",
++    val assistantAvatarCaption: String = "天天见",
++    val avatarShapeStyle: AvatarShapeStyle = AvatarShapeStyle.ROUNDED_SQUARE,
++    val bubbleStyle: BubbleStyle = BubbleStyle.CAT,
+     val useAppIconStyleLoadingIndicator: Boolean = true,
+-    val showUserAvatar: Boolean = false,
++    val showUserAvatar: Boolean = true,
+     val showAssistantBubble: Boolean = true,
+-    val showModelIcon: Boolean = false,
++    val showModelIcon: Boolean = true,
+     val showModelName: Boolean = false,
+     val showDateBelowName: Boolean = false,
+     val showTokenUsage: Boolean = false,
+diff --git a/app/src/main/java/me/rerere/rikkahub/data/model/Assistant.kt b/app/src/main/java/me/rerere/rikkahub/data/model/Assistant.kt
+index e9570ea..da1b751 100644
+--- a/app/src/main/java/me/rerere/rikkahub/data/model/Assistant.kt
++++ b/app/src/main/java/me/rerere/rikkahub/data/model/Assistant.kt
+@@ -22,7 +22,7 @@ data class Assistant(
+     val chatModelId: Uuid? = null, // 如果为null, 使用全局默认模型
+     val name: String = "",
+     val avatar: Avatar = Avatar.Dummy,
+-    val useAssistantAvatar: Boolean = false, // 使用助手头像替代模型头像
++    val useAssistantAvatar: Boolean = true, // 使用助手头像替代模型头像
+     val tags: List<Uuid> = emptyList(),
+     val systemPrompt: String = "",
+     val temperature: Float? = null,
+@@ -260,4 +260,4 @@ fun getTriggeredInjections(
+     return injections
+         .filter { it.isTriggered(context) }
+         .sortedByDescending { it.priority }
+-}
+\ No newline at end of file
++}
+diff --git a/app/src/main/java/me/rerere/rikkahub/ui/components/ai/ChatInput.kt b/app/src/main/java/me/rerere/rikkahub/ui/components/ai/ChatInput.kt
+index 7cc29cb..8a9592b 100644
+--- a/app/src/main/java/me/rerere/rikkahub/ui/components/ai/ChatInput.kt
++++ b/app/src/main/java/me/rerere/rikkahub/ui/components/ai/ChatInput.kt
+@@ -72,7 +72,12 @@ import androidx.compose.ui.Modifier
+ import androidx.compose.ui.draw.clip
+ import androidx.compose.ui.focus.onFocusChanged
+ import androidx.compose.ui.graphics.Color
++import androidx.compose.ui.graphics.SolidColor
++import androidx.compose.ui.graphics.StrokeCap
++import androidx.compose.ui.graphics.StrokeJoin
+ import androidx.compose.ui.graphics.asImageBitmap
++import androidx.compose.ui.graphics.vector.ImageVector
++import androidx.compose.ui.graphics.vector.path
+ import androidx.compose.ui.layout.ContentScale
+ import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+ import androidx.compose.ui.platform.LocalContext
+@@ -99,7 +104,6 @@ import me.rerere.asr.ASRStatus
+ import me.rerere.common.android.appTempFolder
+ import me.rerere.hugeicons.HugeIcons
+ import me.rerere.hugeicons.stroke.Add01
+-import me.rerere.hugeicons.stroke.ArrowUp02
+ import me.rerere.hugeicons.stroke.Cancel01
+ import me.rerere.hugeicons.stroke.FullScreen
+ import me.rerere.hugeicons.stroke.Voice
+@@ -702,7 +706,7 @@ fun ChatInput(
+                                         )
+                                     } else {
+                                         Icon(
+-                                            imageVector = HugeIcons.ArrowUp02,
++                                            imageVector = PaperPlaneIcon,
+                                             contentDescription = stringResource(R.string.send),
+                                             tint = contentColor,
+                                             modifier = Modifier.size(18.dp)
+@@ -767,6 +771,32 @@ fun ChatInput(
+     }
+ }
+ 
++private val PaperPlaneIcon: ImageVector by lazy {
++    ImageVector.Builder(
++        name = "OrangeChatPaperPlane",
++        defaultWidth = 24.dp,
++        defaultHeight = 24.dp,
++        viewportWidth = 24f,
++        viewportHeight = 24f,
++    ).apply {
++        path(
++            fill = null,
++            stroke = SolidColor(Color.Black),
++            strokeLineWidth = 1.9f,
++            strokeLineCap = StrokeCap.Round,
++            strokeLineJoin = StrokeJoin.Round,
++        ) {
++            moveTo(3.2f, 4.3f)
++            lineTo(21f, 12f)
++            lineTo(3.2f, 19.7f)
++            lineTo(7.1f, 12f)
++            close()
++            moveTo(7.1f, 12f)
++            lineTo(21f, 12f)
++        }
++    }.build()
++}
++
+ @Composable
+ private fun ActionIconButton(
+     onClick: () -> Unit,
+@@ -1023,4 +1053,4 @@ private fun FullScreenEditor(
+             }
+         }
+     }
+-}
+\ No newline at end of file
++}
+diff --git a/app/src/main/java/me/rerere/rikkahub/ui/components/message/ChatMessage.kt b/app/src/main/java/me/rerere/rikkahub/ui/components/message/ChatMessage.kt
+index 35557f5..7cbdecd 100644
+--- a/app/src/main/java/me/rerere/rikkahub/ui/components/message/ChatMessage.kt
++++ b/app/src/main/java/me/rerere/rikkahub/ui/components/message/ChatMessage.kt
+@@ -59,7 +59,10 @@ import androidx.compose.ui.draw.clip
+ import androidx.compose.ui.draw.drawWithContent
+ import androidx.compose.ui.geometry.Size
+ import androidx.compose.ui.graphics.Color
++import androidx.compose.ui.graphics.Path
+ import androidx.compose.ui.graphics.Shape
++import androidx.compose.ui.graphics.StrokeCap
++import androidx.compose.ui.graphics.drawscope.Stroke
+ import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+ import androidx.compose.ui.platform.LocalContext
+ import androidx.compose.ui.platform.LocalConfiguration
+@@ -115,6 +118,7 @@ import me.rerere.rikkahub.ui.components.ui.toComposeColor
+ import me.rerere.rikkahub.ui.context.LocalDisplaySettings
+ import me.rerere.rikkahub.ui.theme.extendColors
+ import me.rerere.rikkahub.data.datastore.ChatFontFamily
++import me.rerere.rikkahub.data.datastore.BubbleStyle
+ import androidx.compose.ui.text.font.Font
+ import androidx.compose.ui.layout.ContentScale
+ import androidx.compose.foundation.Image
+@@ -321,12 +325,8 @@ private fun MessagePartsBlock(
+         ?: MaterialTheme.colorScheme.primary
+     val assistantBubbleColor = displaySettings.assistantBubbleColor?.let { it.toComposeColor() }
+         ?: MaterialTheme.colorScheme.surfaceContainerHighest
+-    val userBubbleContentColor = if (displaySettings.userBubbleColor == null) {
+-        MaterialTheme.colorScheme.onPrimary
+-    } else {
+-        MaterialTheme.colorScheme.onSecondaryContainer
+-    }
+-    val assistantBubbleContentColor = MaterialTheme.colorScheme.onSurface
++    val userBubbleContentColor = if (userBubbleColor.luminance() > 0.5f) Color(0xFF1C1B1F) else Color.White
++    val assistantBubbleContentColor = if (assistantBubbleColor.luminance() > 0.5f) Color(0xFF1C1B1F) else Color.White
+     val userBubbleShape = RoundedCornerShape(
+         topStart = bubbleRadius,
+         topEnd = bubbleRadius,
+@@ -443,6 +443,8 @@ private fun MessagePartsBlock(
+                                                         contentColor = userBubbleContentColor,
+                                                         overlayEnabled = displaySettings.bubbleImageOverlayEnabled,
+                                                         bubbleAlpha = bubbleAlpha,
++                                                        catStyle = displaySettings.bubbleStyle == BubbleStyle.CAT,
++                                                        tailOnRight = true,
+                                                         onClick = { onUserMessageClick?.invoke() },
+                                                     ) {
+                                                         MarkdownBlock(
+@@ -467,6 +469,8 @@ private fun MessagePartsBlock(
+                                             contentColor = userBubbleContentColor,
+                                             overlayEnabled = displaySettings.bubbleImageOverlayEnabled,
+                                             bubbleAlpha = bubbleAlpha,
++                                            catStyle = displaySettings.bubbleStyle == BubbleStyle.CAT,
++                                            tailOnRight = true,
+                                             onClick = { onUserMessageClick?.invoke() },
+                                         ) {
+                                             MarkdownBlock(
+@@ -500,6 +504,8 @@ private fun MessagePartsBlock(
+                                                         contentColor = assistantBubbleContentColor,
+                                                         overlayEnabled = displaySettings.bubbleImageOverlayEnabled,
+                                                         bubbleAlpha = bubbleAlpha,
++                                                        catStyle = displaySettings.bubbleStyle == BubbleStyle.CAT,
++                                                        tailOnRight = false,
+                                                     ) {
+                                                         MarkdownBlock(
+                                                             content = segment.replaceRegexes(
+@@ -536,6 +542,8 @@ private fun MessagePartsBlock(
+                                             contentColor = assistantBubbleContentColor,
+                                             overlayEnabled = displaySettings.bubbleImageOverlayEnabled,
+                                             bubbleAlpha = bubbleAlpha,
++                                            catStyle = displaySettings.bubbleStyle == BubbleStyle.CAT,
++                                            tailOnRight = false,
+                                         ) {
+                                             MarkdownBlock(
+                                                 content = displayText.replaceRegexes(
+@@ -764,6 +772,8 @@ private fun BubbleSurface(
+     contentColor: Color = Color.Unspecified,
+     overlayEnabled: Boolean,
+     bubbleAlpha: Float,
++    catStyle: Boolean = false,
++    tailOnRight: Boolean = false,
+     onClick: (() -> Unit)? = null,
+     content: @Composable () -> Unit,
+ ) {
+@@ -772,6 +782,7 @@ private fun BubbleSurface(
+         Box(
+             modifier = modifier
+                 .animateContentSize()
++                .catBubbleDecoration(catStyle, color, bubbleAlpha, tailOnRight)
+                 .clip(shape)
+                 .then(if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier)
+         ) {
+@@ -798,7 +809,9 @@ private fun BubbleSurface(
+         }
+         if (onClick != null) {
+             Surface(
+-                modifier = modifier.animateContentSize(),
++                modifier = modifier
++                    .animateContentSize()
++                    .catBubbleDecoration(catStyle, color, bubbleAlpha, tailOnRight),
+                 shape = shape,
+                 color = color.copy(alpha = bubbleAlpha),
+                 contentColor = contentColor,
+@@ -807,7 +820,9 @@ private fun BubbleSurface(
+             )
+         } else {
+             Surface(
+-                modifier = modifier.animateContentSize(),
++                modifier = modifier
++                    .animateContentSize()
++                    .catBubbleDecoration(catStyle, color, bubbleAlpha, tailOnRight),
+                 shape = shape,
+                 color = color.copy(alpha = bubbleAlpha),
+                 contentColor = contentColor,
+@@ -816,6 +831,47 @@ private fun BubbleSurface(
+         }
+     }
+ }
++
++private fun Modifier.catBubbleDecoration(
++    enabled: Boolean,
++    color: Color,
++    alpha: Float,
++    tailOnRight: Boolean,
++): Modifier = if (!enabled) this else drawWithContent {
++    drawContent()
++    val earHeight = 10.dp.toPx().coerceAtMost(size.height * 0.25f)
++    val earWidth = 14.dp.toPx().coerceAtMost(size.width * 0.18f)
++    val fill = color.copy(alpha = alpha)
++
++    fun drawEar(centerX: Float) {
++        val path = Path().apply {
++            moveTo(centerX - earWidth / 2f, earHeight)
++            lineTo(centerX, 0f)
++            lineTo(centerX + earWidth / 2f, earHeight)
++            close()
++        }
++        drawPath(path = path, color = fill)
++    }
++
++    drawEar(size.width * 0.34f)
++    drawEar(size.width * 0.66f)
++
++    val edgeX = if (tailOnRight) size.width - 2.dp.toPx() else 2.dp.toPx()
++    val direction = if (tailOnRight) -1f else 1f
++    val tail = Path().apply {
++        moveTo(edgeX, size.height * 0.72f)
++        cubicTo(
++            edgeX + direction * 4.dp.toPx(), size.height * 0.88f,
++            edgeX + direction * 10.dp.toPx(), size.height * 0.96f,
++            edgeX + direction * 2.dp.toPx(), size.height - 3.dp.toPx(),
++        )
++    }
++    drawPath(
++        path = tail,
++        color = fill,
++        style = Stroke(width = 2.4.dp.toPx(), cap = StrokeCap.Round),
++    )
++}
+  
+ @Composable
+ @Suppress("UnusedCrossTarget")
+diff --git a/app/src/main/java/me/rerere/rikkahub/ui/components/message/ChatMessageAvatar.kt b/app/src/main/java/me/rerere/rikkahub/ui/components/message/ChatMessageAvatar.kt
+index ad7decc..2ad2512 100644
+--- a/app/src/main/java/me/rerere/rikkahub/ui/components/message/ChatMessageAvatar.kt
++++ b/app/src/main/java/me/rerere/rikkahub/ui/components/message/ChatMessageAvatar.kt
+@@ -84,40 +84,54 @@ fun ChatMessageUserAvatar(
+             horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End),
+             verticalAlignment = Alignment.CenterVertically,
+         ) {
+-            Column(
+-                modifier = Modifier,
+-                horizontalAlignment = Alignment.End,
+-            ) {
+-                Text(
+-                    text = nickname.ifEmpty { stringResource(R.string.user_default_name) },
+-                    style = MaterialTheme.typography.titleSmall,
+-                    maxLines = 1,
+-                    color = LocalContentColor.current.copy(alpha = 0.85f),
+-                )
+-                if (settings.displaySetting.showDateBelowName) {
++            if (nickname.isNotBlank() || settings.displaySetting.showDateBelowName) {
++                Column(
++                    modifier = Modifier,
++                    horizontalAlignment = Alignment.End,
++                ) {
++                    if (nickname.isNotBlank()) {
++                        Text(
++                            text = nickname,
++                            style = MaterialTheme.typography.titleSmall,
++                            maxLines = 1,
++                            color = LocalContentColor.current.copy(alpha = 0.85f),
++                        )
++                    }
++                    if (settings.displaySetting.showDateBelowName) {
++                        Text(
++                            text = message.createdAt.toJavaLocalDateTime().toLocalString(),
++                            style = MaterialTheme.typography.labelSmall,
++                            color = LocalContentColor.current.copy(alpha = 0.6f),
++                            maxLines = 1,
++                        )
++                    }
++                }
++            }
++            Column(horizontalAlignment = Alignment.CenterHorizontally) {
++                Box(contentAlignment = Alignment.Center) {
++                    UIAvatar(
++                        name = nickname,
++                        modifier = Modifier.size(36.dp),
++                        value = avatar,
++                        loading = false,
++                    )
++                    AvatarFrameOverlay(
++                        framePath = settings.displaySetting.userAvatarFramePath,
++                        offsetX = settings.displaySetting.userAvatarFrameOffsetX,
++                        offsetY = settings.displaySetting.userAvatarFrameOffsetY,
++                        scale = settings.displaySetting.userAvatarFrameScale,
++                        baseSize = 36f,
++                    )
++                }
++                settings.displaySetting.userAvatarCaption.takeIf { it.isNotBlank() }?.let { caption ->
+                     Text(
+-                        text = message.createdAt.toJavaLocalDateTime().toLocalString(),
++                        text = caption,
+                         style = MaterialTheme.typography.labelSmall,
+-                        color = LocalContentColor.current.copy(alpha = 0.6f),
++                        color = LocalContentColor.current.copy(alpha = 0.62f),
+                         maxLines = 1,
+                     )
+                 }
+             }
+-            Box(contentAlignment = Alignment.Center) {
+-                UIAvatar(
+-                    name = nickname,
+-                    modifier = Modifier.size(36.dp),
+-                    value = avatar,
+-                    loading = false,
+-                )
+-                AvatarFrameOverlay(
+-                    framePath = settings.displaySetting.userAvatarFramePath,
+-                    offsetX = settings.displaySetting.userAvatarFrameOffsetX,
+-                    offsetY = settings.displaySetting.userAvatarFrameOffsetY,
+-                    scale = settings.displaySetting.userAvatarFrameScale,
+-                    baseSize = 36f,
+-                )
+-            }
+         }
+     }
+ }
+@@ -141,20 +155,30 @@ fun ChatMessageAssistantAvatar(
+         ) {
+             if (useAssistantAvatar) {
+                 if (showIcon) {
+-                    Box(contentAlignment = Alignment.Center) {
+-                        UIAvatar(
+-                            name = assistant.name,
+-                            modifier = Modifier.size(32.dp),
+-                            value = assistant.avatar,
+-                            loading = loading,
+-                        )
+-                        AvatarFrameOverlay(
+-                            framePath = settings.displaySetting.aiAvatarFramePath,
+-                            offsetX = settings.displaySetting.aiAvatarFrameOffsetX,
+-                            offsetY = settings.displaySetting.aiAvatarFrameOffsetY,
+-                            scale = settings.displaySetting.aiAvatarFrameScale,
+-                            baseSize = 32f,
+-                        )
++                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
++                        Box(contentAlignment = Alignment.Center) {
++                            UIAvatar(
++                                name = assistant.name,
++                                modifier = Modifier.size(36.dp),
++                                value = assistant.avatar,
++                                loading = loading,
++                            )
++                            AvatarFrameOverlay(
++                                framePath = settings.displaySetting.aiAvatarFramePath,
++                                offsetX = settings.displaySetting.aiAvatarFrameOffsetX,
++                                offsetY = settings.displaySetting.aiAvatarFrameOffsetY,
++                                scale = settings.displaySetting.aiAvatarFrameScale,
++                                baseSize = 36f,
++                            )
++                        }
++                        settings.displaySetting.assistantAvatarCaption.takeIf { it.isNotBlank() }?.let { caption ->
++                            Text(
++                                text = caption,
++                                style = MaterialTheme.typography.labelSmall,
++                                color = LocalContentColor.current.copy(alpha = 0.62f),
++                                maxLines = 1,
++                            )
++                        }
+                     }
+                 }
+                 Column(
+@@ -213,4 +237,4 @@ fun ChatMessageAssistantAvatar(
+             }
+         }
+     }
+-}
+\ No newline at end of file
++}
+diff --git a/app/src/main/java/me/rerere/rikkahub/ui/hooks/AvatarShape.kt b/app/src/main/java/me/rerere/rikkahub/ui/hooks/AvatarShape.kt
+index bd155c9..83f207d 100644
+--- a/app/src/main/java/me/rerere/rikkahub/ui/hooks/AvatarShape.kt
++++ b/app/src/main/java/me/rerere/rikkahub/ui/hooks/AvatarShape.kt
+@@ -12,14 +12,19 @@ import androidx.compose.animation.core.infiniteRepeatable
+ import androidx.compose.animation.core.rememberInfiniteTransition
+ import androidx.compose.animation.core.tween
+ import androidx.compose.foundation.shape.CircleShape
++import androidx.compose.foundation.shape.RoundedCornerShape
+ import androidx.compose.material3.MaterialShapes
+ import androidx.compose.material3.toShape
+ import androidx.compose.runtime.Composable
+ import androidx.compose.ui.graphics.Shape
++import androidx.compose.ui.unit.dp
++import me.rerere.rikkahub.data.datastore.AvatarShapeStyle
++import me.rerere.rikkahub.ui.context.LocalDisplaySettings
+ import kotlin.math.roundToInt
+ 
+ @Composable
+ fun rememberAvatarShape(loading: Boolean): Shape {
++    val avatarShapeStyle = LocalDisplaySettings.current.avatarShapeStyle
+     val infiniteTransition = rememberInfiniteTransition()
+     val rotateAngle = infiniteTransition.animateFloat(
+         initialValue = 0f,
+@@ -31,5 +36,12 @@ fun rememberAvatarShape(loading: Boolean): Shape {
+             ),
+         )
+     )
+-    return if (loading) MaterialShapes.Cookie6Sided.toShape(rotateAngle.value.roundToInt()) else CircleShape
++    return if (loading) {
++        MaterialShapes.Cookie6Sided.toShape(rotateAngle.value.roundToInt())
++    } else {
++        when (avatarShapeStyle) {
++            AvatarShapeStyle.CIRCLE -> CircleShape
++            AvatarShapeStyle.ROUNDED_SQUARE -> RoundedCornerShape(11.dp)
++        }
++    }
+ }
+diff --git a/app/src/main/java/me/rerere/rikkahub/ui/pages/setting/SettingDisplayMessagePage.kt b/app/src/main/java/me/rerere/rikkahub/ui/pages/setting/SettingDisplayMessagePage.kt
+index 1ff1631..763f947 100644
+--- a/app/src/main/java/me/rerere/rikkahub/ui/pages/setting/SettingDisplayMessagePage.kt
++++ b/app/src/main/java/me/rerere/rikkahub/ui/pages/setting/SettingDisplayMessagePage.kt
+@@ -19,6 +19,7 @@ import androidx.compose.foundation.lazy.LazyColumn
+ import androidx.compose.material3.LargeFlexibleTopAppBar
+ import androidx.compose.material3.LocalTextStyle
+ import androidx.compose.material3.MaterialTheme
++import androidx.compose.material3.OutlinedTextField
+ import androidx.compose.material3.Scaffold
+ import androidx.compose.material3.SegmentedButton
+ import androidx.compose.material3.SegmentedButtonDefaults
+@@ -45,6 +46,8 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
+ import java.io.File
+ import me.rerere.rikkahub.R
+ import me.rerere.rikkahub.data.datastore.ChatFontFamily
++import me.rerere.rikkahub.data.datastore.AvatarShapeStyle
++import me.rerere.rikkahub.data.datastore.BubbleStyle
+ import me.rerere.rikkahub.data.datastore.DisplaySetting
+ import me.rerere.rikkahub.ui.components.nav.BackButton
+ import me.rerere.rikkahub.ui.components.richtext.MarkdownBlock
+@@ -119,6 +122,76 @@ fun SettingDisplayMessagePage(vm: SettingVM = koinViewModel()) {
+                             )
+                         },
+                     )
++                    item(
++                        headlineContent = { Text("头像形状") },
++                        supportingContent = {
++                            val options = listOf(
++                                AvatarShapeStyle.CIRCLE to "圆形",
++                                AvatarShapeStyle.ROUNDED_SQUARE to "圆角方形",
++                            )
++                            SingleChoiceSegmentedButtonRow(
++                                modifier = Modifier.padding(top = 8.dp).fillMaxWidth()
++                            ) {
++                                options.forEachIndexed { index, (style, label) ->
++                                    SegmentedButton(
++                                        selected = displaySetting.avatarShapeStyle == style,
++                                        onClick = { updateDisplaySetting(displaySetting.copy(avatarShapeStyle = style)) },
++                                        shape = SegmentedButtonDefaults.itemShape(index, options.size),
++                                    ) { Text(label) }
++                                }
++                            }
++                        },
++                    )
++                    item(
++                        headlineContent = { Text("头像小字") },
++                        supportingContent = {
++                            Column(
++                                modifier = Modifier.padding(top = 8.dp),
++                                verticalArrangement = Arrangement.spacedBy(8.dp),
++                            ) {
++                                OutlinedTextField(
++                                    value = displaySetting.userAvatarCaption,
++                                    onValueChange = {
++                                        updateDisplaySetting(displaySetting.copy(userAvatarCaption = it.take(12)))
++                                    },
++                                    label = { Text("我的小字") },
++                                    placeholder = { Text("明天见") },
++                                    singleLine = true,
++                                    modifier = Modifier.fillMaxWidth(),
++                                )
++                                OutlinedTextField(
++                                    value = displaySetting.assistantAvatarCaption,
++                                    onValueChange = {
++                                        updateDisplaySetting(displaySetting.copy(assistantAvatarCaption = it.take(12)))
++                                    },
++                                    label = { Text("Daddy 的小字") },
++                                    placeholder = { Text("天天见") },
++                                    singleLine = true,
++                                    modifier = Modifier.fillMaxWidth(),
++                                )
++                            }
++                        },
++                    )
++                    item(
++                        headlineContent = { Text("气泡样式") },
++                        supportingContent = {
++                            val options = listOf(
++                                BubbleStyle.ROUNDED to "圆润",
++                                BubbleStyle.CAT to "猫猫",
++                            )
++                            SingleChoiceSegmentedButtonRow(
++                                modifier = Modifier.padding(top = 8.dp).fillMaxWidth()
++                            ) {
++                                options.forEachIndexed { index, (style, label) ->
++                                    SegmentedButton(
++                                        selected = displaySetting.bubbleStyle == style,
++                                        onClick = { updateDisplaySetting(displaySetting.copy(bubbleStyle = style)) },
++                                        shape = SegmentedButtonDefaults.itemShape(index, options.size),
++                                    ) { Text(label) }
++                                }
++                            }
++                        },
++                    )
+                     item(
+                         headlineContent = { Text(stringResource(R.string.setting_display_page_show_assistant_bubble_title)) },
+                         supportingContent = { Text(stringResource(R.string.setting_display_page_show_assistant_bubble_desc)) },
+@@ -365,4 +438,4 @@ fun SettingDisplayMessagePage(vm: SettingVM = koinViewModel()) {
+             }
+         }
+     }
+-}
+\ No newline at end of file
++}
+diff --git a/app/src/main/res/values-zh-rTW/strings.xml b/app/src/main/res/values-zh-rTW/strings.xml
+index e52a210..a611c33 100644
+--- a/app/src/main/res/values-zh-rTW/strings.xml
++++ b/app/src/main/res/values-zh-rTW/strings.xml
+@@ -232,7 +232,7 @@
+   <string name="cancel_edit">取消編輯</string>
+   <string name="chain_of_thought_collapse">收合</string>
+   <string name="chain_of_thought_show_more_steps">顯示更多 %d 個步驟</string>
+-  <string name="chat_input_placeholder">輸入訊息與AI聊天</string>
++  <string name="chat_input_placeholder">iMessage</string>
+   <string name="chat_input_unsupported_file_type">不支援的檔案類型：%s</string>
+   <string name="chat_message_add_favorite">加入最愛</string>
+   <string name="chat_message_remove_favorite">移除最愛</string>
+diff --git a/app/src/main/res/values-zh/strings.xml b/app/src/main/res/values-zh/strings.xml
+index 9d6a656..6cdf4ca 100644
+--- a/app/src/main/res/values-zh/strings.xml
++++ b/app/src/main/res/values-zh/strings.xml
+@@ -232,7 +232,7 @@
+   <string name="cancel_edit">取消编辑</string>
+   <string name="chain_of_thought_collapse">收起</string>
+   <string name="chain_of_thought_show_more_steps">再显示 %d 步</string>
+-  <string name="chat_input_placeholder">输入消息与AI聊天</string>
++  <string name="chat_input_placeholder">iMessage</string>
+   <string name="chat_input_unsupported_file_type">不支持的文件类型：%s</string>
+   <string name="chat_message_add_favorite">添加收藏</string>
+   <string name="chat_message_remove_favorite">取消收藏</string>
+diff --git a/app/src/main/res/values/strings.xml b/app/src/main/res/values/strings.xml
+index 90eb7e2..f623b57 100644
+--- a/app/src/main/res/values/strings.xml
++++ b/app/src/main/res/values/strings.xml
+@@ -235,7 +235,7 @@
+   <string name="cancel_edit">Cancel Edit</string>
+   <string name="chain_of_thought_collapse">Collapse</string>
+   <string name="chain_of_thought_show_more_steps">Show %d more steps</string>
+-  <string name="chat_input_placeholder">Chat with AI</string>
++  <string name="chat_input_placeholder">iMessage</string>
+   <string name="chat_input_unsupported_file_type">Unsupported file type: %s</string>
+   <string name="chat_message_add_favorite">Add Favorite</string>
+   <string name="chat_message_remove_favorite">Remove Favorite</string>
+-- 
+2.52.0
+
