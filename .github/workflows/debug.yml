@@ -23,6 +23,9 @@ jobs:
       - name: Check out source
         uses: actions/checkout@v4
 
+      - name: Apply preview UI patch
+        run: git apply 0001-feat-add-intimate-chat-preview-styling.patch
+
       - name: Initialize required submodule
         run: git submodule update --init --depth 1 material3/material-color-utilities
 
